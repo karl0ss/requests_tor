@@ -16,13 +16,16 @@ IP_API = (
     "https://api.my-ip.io/ip",
     "https://api.ipify.org",
     "https://icanhazip.com",
+    "https://ipinfo.io/ip",
     "https://wtfismyip.com/text",
     "https://ifconfig.me/ip",
     "https://checkip.amazonaws.com",
     "https://api.myip.la",
     "https://ipapi.co/ip",
+    "https://trackip.net/ip",
+    "https://ip.rootnet.in",
+    "https://myexternalip.com/raw",
     "https://ip8.com/ip",
-    "https://ipv4v6.lafibre.info/ip.php",
 )
 
 TOR_HEADERS = {
@@ -39,26 +42,28 @@ class RequestsTor:
     tor_ports = specify Tor socks ports tuple (default is (9150,), as the default in Tor Browser),
     if more than one port is set, the requests will be sent sequentially through the each port;
     tor_cport = specify Tor control port (default is 9151 for Tor Browser, for Tor use 9051);
+    tor_host = specify Tor hostname (default is 127.0.0.1), this is used for contacting the Tor
+    service, in addition to the Tor controller.  Because it is used for the controller, it needs to
+    be a valid IP address, and not just the hostname on the network;
     password = specify Tor control port password (default is None);
     autochange_id = number of requests via a one Tor socks port (default=5) to change TOR identity,
     specify autochange_id = 0 to turn off autochange Tor identity;
     threads = specify threads to download urls list (default=8).
-    max_retries = should the current Tor exit node IP result in ConnectionTimeout errors, automatically
-    generate a new ID and try again until we've reached our max_tries count (default 5).
     """
 
     def __init__(
         self,
         tor_ports=(9150,),
         tor_cport=9151,
+        tor_host="127.0.0.1",
         password=None,
         autochange_id=5,
         threads=8,
         verbose=False,
-        max_retries=5
     ):
         self.tor_ports = tor_ports
         self.tor_cport = tor_cport
+        self.tor_host = tor_host
         self.password = password
         self.autochange_id = autochange_id
         self.threads = threads
@@ -70,19 +75,15 @@ class RequestsTor:
                 "'verbose' parameter is deprecated. Use logging.basicConfig(level=logging.INFO)."
             )
         self.logger = logging.getLogger(__name__)
-        self.max_retries = max_retries
 
     def new_id(self):
-        with Controller.from_port(port=self.tor_cport) as controller:
+        with Controller.from_port(port=self.tor_cport, address=self.tor_host) as controller:
             controller.authenticate(password=self.password)
             controller.signal(Signal.NEWNYM)
-            wait = round(controller.get_newnym_wait())
             self.logger.info(
-                f"TOR cport auth: {controller.is_authenticated()}. TOR NEW IDENTITY. Sleep around {wait} sec."
+                f"TOR cport auth: {controller.is_authenticated()}. TOR NEW IDENTITY. Sleep 3 sec."
             )
-            while not controller.is_newnym_available():
-                wait = w if (w := wait * 0.5) > 0.5 else 0.5
-                sleep(wait)
+            sleep(3)
 
     def check_ip(self):
         my_ip = self.get(choice(IP_API)).text
@@ -97,8 +98,8 @@ class RequestsTor:
             del kwargs["proxies"]
 
         proxies = {
-            "http": f"socks5h://localhost:{port}",
-            "https": f"socks5h://localhost:{port}",
+            "http": f"socks5h://{self.tor_host}:{port}",
+            "https": f"socks5h://{self.tor_host}:{port}",
         }
 
         kwargs["headers"] = kwargs.get("headers", TOR_HEADERS)
@@ -108,35 +109,23 @@ class RequestsTor:
             self.new_id()
         return resp
 
-    def attempt(self, method, url, **kwargs):
-        tries = 0
-        while tries < self.max_retries:
-            try:
-                return self.request(method, url, **kwargs)
-            except requests.exceptions.ConnectionError as e:
-                self.logger.error(f"Error: {e}")
-                tries += 1
-                self.logger.info(f"Retry: {tries}")
-                self.new_id()
-        raise requests.exceptions.ConnectionError
-       
     def get(self, url, **kwargs):
-        return self.attempt("GET", url, **kwargs)
+        return self.request("GET", url, **kwargs)
 
     def post(self, url, **kwargs):
-        return self.attempt("POST", url, **kwargs)
+        return self.request("POST", url, **kwargs)
 
     def put(self, url, **kwargs):
-        return self.attempt("PUT", url, **kwargs)
+        return self.request("PUT", url, **kwargs)
 
     def patch(self, url, **kwargs):
-        return self.attempt("PATCH", url, **kwargs)
+        return self.request("PATCH", url, **kwargs)
 
     def delete(self, url, **kwargs):
-        return self.attempt("DELETE", url, **kwargs)
+        return self.request("DELETE", url, **kwargs)
 
     def head(self, url, **kwargs):
-        return self.attempt("HEAD", url, **kwargs)
+        return self.request("HEAD", url, **kwargs)
 
     def get_urls(self, urls, **kwargs):
         results, fs = [], []
